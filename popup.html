@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <span class="title">JSON 格式化</span>
+    </div>
+    
+    <div class="search-container">
+      <input type="text" id="searchInputBox" placeholder="搜索..." class="search-input">
+      <span id="searchCount" class="search-count"></span>
+      <button id="prevBtn" class="btn-icon" title="上一个">▲</button>
+      <button id="nextBtn" class="btn-icon" title="下一个">▼</button>
+    </div>
+
+    <div class="header-right">
+      <div class="dropdown">
+        <button class="btn-icon more-btn">...</button>
+        <div class="dropdown-content">
+          <button id="toggleWrap" class="btn-menu">自动换行</button>
+          <button id="toggleReadOnly" class="btn-menu">只读模式: 关闭</button>
+          <button id="splitBtn" class="btn-menu">双栏对比</button>
+          <button id="themeBtn" class="btn-menu">切换主题</button>
+          <button id="saveBtn" class="btn-menu">保存历史</button>
+          <button id="historyBtn" class="btn-menu">查看历史</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="editorContainer" class="editor-container">
+    <div class="input-wrapper" id="wrapper1">
+      <pre id="highlight1" class="highlight-layer"></pre>
+      <textarea id="jsonInput" class="edit-layer" placeholder="在此粘贴 JSON... (Shift+Alt+F 格式化)" spellcheck="false"></textarea>
+    </div>
+    <div class="input-wrapper secondary-editor" id="wrapper2" style="display: none;">
+      <pre id="highlight2" class="highlight-layer"></pre>
+      <textarea id="jsonInput2" class="edit-layer" placeholder="在此粘贴 JSON 进行对比..." spellcheck="false"></textarea>
+    </div>
+  </div>
+  <div id="status" class="status">就绪</div>
+  
+  <div id="historyOverlay" class="history-overlay" style="display: none;">
+    <div class="history-header">
+      <span>历史记录</span>
+      <button id="closeHistory" class="btn-close">关闭</button>
+    </div>
+    <ul id="historyList" class="history-list"></ul>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
