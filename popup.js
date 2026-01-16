@@ -41,12 +41,33 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchState = {
     matches: [],
     currentIndex: -1,
-    offsetInput2: 0
+    offsetInput2: 0,
+    isCapped: false
+  };
+
+  const PERF = {
+    inputDebounceMs: 150,
+    storageDebounceMs: 500,
+    maxSyntaxHighlightChars: 50_000,
+    maxSearchHighlightChars: 50_000,
+    searchDebounceMs: 120,
+    maxSearchMatches: 5000,
+    pasteWarnChars: 50_000,
+    pasteWarnLines: 2000
+  };
+
+  let pendingSearchRebuildTimer = null;
+  const workerState = {
+    worker: null,
+    nextId: 1,
+    pending: new Map(),
+    formatSeqByEditor: new WeakMap()
   };
 
   init();
 
   function init() {
+    initWorker();
     applyWrapState();
     applyReadOnlyState();
     applyThemeState();
@@ -89,14 +110,54 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function initWorker() {
+    try {
+      const workerUrl =
+        typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome.runtime.getURL('jsonWorker.js') : 'jsonWorker.js';
+      workerState.worker = new Worker(workerUrl);
+    } catch {
+      workerState.worker = null;
+      return;
+    }
+
+    workerState.worker.addEventListener('message', (event) => {
+      const data = event.data || {};
+      const id = data.id;
+      if (!workerState.pending.has(id)) return;
+      const entry = workerState.pending.get(id);
+      workerState.pending.delete(id);
+      if (data.ok) {
+        entry.resolve(data);
+      } else {
+        entry.reject(new Error(data.error || 'worker error'));
+      }
+    });
+
+    workerState.worker.addEventListener('error', () => {
+      workerState.worker = null;
+      for (const entry of workerState.pending.values()) entry.reject(new Error('worker error'));
+      workerState.pending.clear();
+    });
+  }
+
+  function callJsonWorker(type, text) {
+    if (!workerState.worker) return null;
+    return new Promise((resolve, reject) => {
+      const id = workerState.nextId++;
+      workerState.pending.set(id, { resolve, reject });
+      workerState.worker.postMessage({ id, type, text });
+    });
+  }
+
   function setupSearchControls() {
     els.searchInputBox.addEventListener('input', () => {
-      rebuildSearchMatches();
+      scheduleSearchRebuild(PERF.searchDebounceMs);
     });
 
     els.searchInputBox.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
+      runSearchRebuildNow();
       navigateSearch(e.shiftKey ? 'prev' : 'next');
     });
 
@@ -145,19 +206,58 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setupEditorListeners(editor, { storageKey, highlight }) {
+    let pendingValidateTimer = null;
+    let pendingHighlightTimer = null;
+    let pendingStorageTimer = null;
+
+    editor.addEventListener('paste', (e) => {
+      if (editor.readOnly) return;
+
+      const pastedText = getClipboardText(e);
+      if (!pastedText) return;
+
+      const chars = pastedText.length;
+      const lines = countTextLines(pastedText);
+
+      if (chars > PERF.pasteWarnChars || lines > PERF.pasteWarnLines) {
+        const ok = window.confirm(
+          `当前文本过长（${formatCount(lines)} 行 / ${formatCount(chars)} 字符），粘贴可能造成卡顿，确定粘贴吗？`
+        );
+        if (!ok) e.preventDefault();
+      }
+    });
+
     editor.addEventListener('input', (e) => {
-      if (storageKey) writeString(storageKey, editor.value);
+      if (storageKey) {
+        if (pendingStorageTimer) window.clearTimeout(pendingStorageTimer);
+        pendingStorageTimer = window.setTimeout(() => {
+          try {
+            writeString(storageKey, editor.value);
+          } catch {
+          }
+        }, PERF.storageDebounceMs);
+      }
 
       if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromDrop') {
         formatJsonInEditor(editor, highlight);
         return;
       }
 
-      validateJsonIntoStatus(editor.value);
+      if (pendingValidateTimer) window.clearTimeout(pendingValidateTimer);
+      pendingValidateTimer = window.setTimeout(() => {
+        validateJsonIntoStatus(editor.value);
+      }, PERF.inputDebounceMs);
+
       if (getSearchTerm()) {
-        rebuildSearchMatches();
+        if (pendingSearchRebuildTimer) window.clearTimeout(pendingSearchRebuildTimer);
+        pendingSearchRebuildTimer = window.setTimeout(() => {
+          rebuildSearchMatches();
+        }, PERF.inputDebounceMs);
       } else {
-        updateHighlightForEditor(editor, highlight, 0);
+        if (pendingHighlightTimer) window.clearTimeout(pendingHighlightTimer);
+        pendingHighlightTimer = window.setTimeout(() => {
+          updateHighlightForEditor(editor, highlight, 0);
+        }, PERF.inputDebounceMs);
       }
     });
 
@@ -182,6 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
     searchState.matches = [];
     searchState.currentIndex = -1;
     searchState.offsetInput2 = 0;
+    searchState.isCapped = false;
 
     if (!term) {
       els.searchCount.textContent = '';
@@ -193,7 +294,7 @@ document.addEventListener('DOMContentLoaded', () => {
     findMatchesInText(els.input1.value, term, 'input');
     searchState.offsetInput2 = searchState.matches.length;
 
-    if (state.isSplit) {
+    if (state.isSplit && !searchState.isCapped) {
       findMatchesInText(els.input2.value, term, 'input2');
     }
 
@@ -202,9 +303,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.isSplit) updateHighlightForEditor(els.input2, els.highlight2, searchState.offsetInput2);
   }
 
+  function scheduleSearchRebuild(delayMs) {
+    if (pendingSearchRebuildTimer) window.clearTimeout(pendingSearchRebuildTimer);
+    pendingSearchRebuildTimer = window.setTimeout(() => {
+      rebuildSearchMatches();
+    }, delayMs);
+  }
+
+  function runSearchRebuildNow() {
+    if (pendingSearchRebuildTimer) window.clearTimeout(pendingSearchRebuildTimer);
+    pendingSearchRebuildTimer = null;
+    rebuildSearchMatches();
+  }
+
   function navigateSearch(direction) {
     if (searchState.matches.length === 0) return;
 
+    const prevIndex = searchState.currentIndex;
     if (direction === 'next') {
       searchState.currentIndex = (searchState.currentIndex + 1) % searchState.matches.length;
     } else {
@@ -221,17 +336,30 @@ document.addEventListener('DOMContentLoaded', () => {
     target.setSelectionRange(match.start, match.end);
     els.searchInputBox.focus();
 
-    updateHighlightForEditor(els.input1, els.highlight1, 0);
-    if (state.isSplit) updateHighlightForEditor(els.input2, els.highlight2, searchState.offsetInput2);
+    updateCurrentMatchDom(prevIndex, searchState.currentIndex);
 
     window.setTimeout(() => {
-      const currentSpan = targetHighlight.querySelector('.search-match.current');
-      if (!currentSpan) return;
-
-      currentSpan.scrollIntoView({ block: 'center', inline: 'nearest' });
-      target.scrollTop = targetHighlight.scrollTop;
-      target.scrollLeft = targetHighlight.scrollLeft;
+      const currentSpan = targetHighlight.querySelector(`[data-match-index="${searchState.currentIndex}"]`);
+      if (currentSpan) currentSpan.scrollIntoView({ block: 'center', inline: 'nearest' });
+      targetHighlight.scrollTop = target.scrollTop;
+      targetHighlight.scrollLeft = target.scrollLeft;
     }, 0);
+  }
+
+  function updateCurrentMatchDom(prevIndex, nextIndex) {
+    if (prevIndex >= 0) {
+      const prevMatch = searchState.matches[prevIndex];
+      const prevHighlight = prevMatch?.source === 'input2' ? els.highlight2 : els.highlight1;
+      const prevSpan = prevHighlight.querySelector(`[data-match-index="${prevIndex}"]`);
+      if (prevSpan) prevSpan.classList.remove('current');
+    }
+
+    if (nextIndex >= 0) {
+      const nextMatch = searchState.matches[nextIndex];
+      const nextHighlight = nextMatch?.source === 'input2' ? els.highlight2 : els.highlight1;
+      const nextSpan = nextHighlight.querySelector(`[data-match-index="${nextIndex}"]`);
+      if (nextSpan) nextSpan.classList.add('current');
+    }
   }
 
   function updateSearchCountUI() {
@@ -240,13 +368,18 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const displayIndex = searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0;
-    els.searchCount.textContent = `${displayIndex}/${searchState.matches.length}`;
+    const totalText = searchState.isCapped ? `${PERF.maxSearchMatches}+` : String(searchState.matches.length);
+    els.searchCount.textContent = `${displayIndex}/${totalText}`;
   }
 
   function findMatchesInText(text, term, source) {
     const regex = new RegExp(escapeRegExp(term), 'gi');
     let match;
     while ((match = regex.exec(text)) !== null) {
+      if (searchState.matches.length >= PERF.maxSearchMatches) {
+        searchState.isCapped = true;
+        break;
+      }
       searchState.matches.push({
         start: match.index,
         end: match.index + term.length,
@@ -256,13 +389,29 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateHighlightForEditor(editor, highlight, matchStartIndex) {
-    let html = syntaxHighlight(editor.value);
-
+    const text = editor.value || '';
     const term = getSearchTerm();
+
+    if (term && text.length > PERF.maxSearchHighlightChars) {
+      highlight.dataset.perfNote = '大文件：已关闭搜索高亮';
+      highlight.textContent = text;
+      return;
+    }
+
+    if (!term && text.length > PERF.maxSyntaxHighlightChars) {
+      highlight.dataset.perfNote = '大文件：已关闭语法高亮';
+      highlight.textContent = text;
+      return;
+    }
+
+    delete highlight.dataset.perfNote;
+
+    let html = syntaxHighlight(text);
     if (term) {
       html = applySearchHighlight(html, term, {
         matchStartIndex,
-        currentMatchIndex: searchState.currentIndex
+        currentMatchIndex: searchState.currentIndex,
+        maxMatchIndexExclusive: PERF.maxSearchMatches
       });
     }
 
@@ -336,9 +485,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function formatJsonInEditor(editor, highlight, { force = false } = {}) {
+  function formatJsonInEditor(editor, highlight, { force = false, useWorker = true } = {}) {
     const text = editor.value;
     if (!text.trim()) return;
+
+    if (useWorker) {
+      const promise = callJsonWorker('format', text);
+      if (promise) {
+        const seq = (workerState.formatSeqByEditor.get(editor) || 0) + 1;
+        workerState.formatSeqByEditor.set(editor, seq);
+        setStatus('格式化中...', getReadyStatusColor());
+        promise
+          .then(({ formatted }) => {
+            if (workerState.formatSeqByEditor.get(editor) !== seq) return;
+            if (editor.value !== text) return;
+
+            if (editor.value !== formatted || force) {
+              editor.value = formatted;
+              if (editor === els.input1) {
+                try {
+                  writeString(STORAGE_KEYS.draft, formatted);
+                } catch {
+                }
+              }
+            }
+
+            if (getSearchTerm()) {
+              runSearchRebuildNow();
+            } else {
+              updateHighlightForEditor(editor, highlight, 0);
+            }
+
+            setStatusOk('JSON 已格式化');
+          })
+          .catch(() => {
+            if (workerState.formatSeqByEditor.get(editor) !== seq) return;
+            setStatusError('JSON 格式错误');
+          });
+        return;
+      }
+    }
 
     try {
       const parsed = JSON.parse(text);
@@ -455,6 +641,37 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem(key, value);
   }
 
+  function getClipboardText(e) {
+    const clipboardData = e.clipboardData || window.clipboardData;
+    if (!clipboardData || typeof clipboardData.getData !== 'function') return '';
+    try {
+      return clipboardData.getData('text') || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function countTextLines(text) {
+    if (!text) return 0;
+    let lines = 1;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code === 10) {
+        lines++;
+        continue;
+      }
+      if (code === 13) {
+        lines++;
+        if (text.charCodeAt(i + 1) === 10) i++;
+      }
+    }
+    return lines;
+  }
+
+  function formatCount(n) {
+    return String(n);
+  }
+
   function isShortcutFormat(e) {
     return e.altKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F');
   }
@@ -482,7 +699,7 @@ document.addEventListener('DOMContentLoaded', () => {
     );
   }
 
-  function applySearchHighlight(html, term, { matchStartIndex, currentMatchIndex }) {
+  function applySearchHighlight(html, term, { matchStartIndex, currentMatchIndex, maxMatchIndexExclusive }) {
     const div = document.createElement('div');
     div.innerHTML = html;
 
@@ -504,12 +721,13 @@ document.addEventListener('DOMContentLoaded', () => {
       let hasMatch = false;
 
       while ((match = regex.exec(text)) !== null) {
+        if (matchCounter >= maxMatchIndexExclusive) break;
         hasMatch = true;
         newHtml += escapeHtml(text.slice(lastIndex, match.index));
 
         const isCurrent = matchCounter === currentMatchIndex;
         const className = isCurrent ? 'search-match current' : 'search-match';
-        newHtml += `<span class="${className}">${escapeHtml(match[0])}</span>`;
+        newHtml += `<span class="${className}" data-match-index="${matchCounter}">${escapeHtml(match[0])}</span>`;
 
         lastIndex = regex.lastIndex;
         matchCounter++;
@@ -521,6 +739,8 @@ document.addEventListener('DOMContentLoaded', () => {
         span.innerHTML = newHtml;
         textNode.parentNode.replaceChild(span, textNode);
       }
+
+      if (matchCounter >= maxMatchIndexExclusive) break;
     }
 
     return div.innerHTML;
