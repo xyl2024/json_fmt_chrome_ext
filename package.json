@@ -1,0 +1,9 @@
+{
+  "name": "json-fmt-chrome-ext",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node tools/check.mjs"
+  }
+}
+

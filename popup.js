@@ -1,393 +1,277 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const input = document.getElementById('jsonInput');
-  const highlight1 = document.getElementById('highlight1');
-  const input2 = document.getElementById('jsonInput2');
-  const highlight2 = document.getElementById('highlight2');
-  const wrapper2 = document.getElementById('wrapper2');
-  
-  const toggleWrapBtn = document.getElementById('toggleWrap');
-  const toggleReadOnlyBtn = document.getElementById('toggleReadOnly');
-  const splitBtn = document.getElementById('splitBtn');
-  const themeBtn = document.getElementById('themeBtn');
-  const saveBtn = document.getElementById('saveBtn');
-  const historyBtn = document.getElementById('historyBtn');
-  const status = document.getElementById('status');
-  const historyOverlay = document.getElementById('historyOverlay');
-  const historyList = document.getElementById('historyList');
-  const closeHistoryBtn = document.getElementById('closeHistory');
-  
-  // Search elements
-  const searchInputBox = document.getElementById('searchInputBox');
-  const searchCount = document.getElementById('searchCount'); // New
-  const prevBtn = document.getElementById('prevBtn');
-  const nextBtn = document.getElementById('nextBtn');
-  
-  let isWrap = true;
-  let isReadOnly = false;
-  let isSplit = false;
-  let currentTheme = localStorage.getItem('json_fmt_theme') || 'dark';
+  const els = {
+    input1: document.getElementById('jsonInput'),
+    highlight1: document.getElementById('highlight1'),
+    input2: document.getElementById('jsonInput2'),
+    highlight2: document.getElementById('highlight2'),
+    wrapper2: document.getElementById('wrapper2'),
+
+    toggleWrapBtn: document.getElementById('toggleWrap'),
+    toggleReadOnlyBtn: document.getElementById('toggleReadOnly'),
+    splitBtn: document.getElementById('splitBtn'),
+    themeBtn: document.getElementById('themeBtn'),
+    saveBtn: document.getElementById('saveBtn'),
+    historyBtn: document.getElementById('historyBtn'),
+
+    status: document.getElementById('status'),
+    historyOverlay: document.getElementById('historyOverlay'),
+    historyList: document.getElementById('historyList'),
+    closeHistoryBtn: document.getElementById('closeHistory'),
+
+    searchInputBox: document.getElementById('searchInputBox'),
+    searchCount: document.getElementById('searchCount'),
+    prevBtn: document.getElementById('prevBtn'),
+    nextBtn: document.getElementById('nextBtn')
+  };
+
+  const STORAGE_KEYS = {
+    theme: 'json_fmt_theme',
+    draft: 'json_fmt_draft',
+    history: 'json_fmt_history'
+  };
   const MAX_HISTORY = 10;
-  
-  let searchMatches = []; // Store match indices {start, end}
-  let currentMatchIndex = -1;
 
-  // Initialize
-  updateWrapState();
-  updateReadOnlyState();
-  updateThemeState();
-  
-  // Load draft
-  const savedDraft = localStorage.getItem('json_fmt_draft');
-  if (savedDraft) {
-    input.value = savedDraft;
-    updateHighlight(input, highlight1);
-    validateJSON(input);
+  const state = {
+    isWrap: true,
+    isReadOnly: false,
+    isSplit: false,
+    theme: readString(STORAGE_KEYS.theme) || 'dark'
+  };
+
+  const searchState = {
+    matches: [],
+    currentIndex: -1,
+    offsetInput2: 0
+  };
+
+  init();
+
+  function init() {
+    applyWrapState();
+    applyReadOnlyState();
+    applyThemeState();
+
+    const draft = readString(STORAGE_KEYS.draft);
+    if (draft) {
+      els.input1.value = draft;
+      updateHighlightForEditor(els.input1, els.highlight1, 0);
+      validateJsonIntoStatus(els.input1.value);
+    } else {
+      setStatusReady();
+    }
+
+    setupEditorSync(els.input1, els.highlight1);
+    setupEditorSync(els.input2, els.highlight2);
+
+    setupGlobalShortcuts();
+    setupSearchControls();
+    setupMenuButtons();
+    setupEditorListeners(els.input1, { storageKey: STORAGE_KEYS.draft, highlight: els.highlight1 });
+    setupEditorListeners(els.input2, { storageKey: null, highlight: els.highlight2 });
   }
 
-  // Setup Editor Sync
-  setupEditorSync(input, highlight1);
-  setupEditorSync(input2, highlight2);
-
-  // --- Event Listeners ---
-  
-  // Global Shortcut: Ctrl+Shift+F to Focus Search
-  document.addEventListener('keydown', (e) => {
-    // Existing Alt+Shift+F logic
-    if (e.altKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F')) {
-      if (document.activeElement !== input && document.activeElement !== input2) {
-        e.preventDefault();
-        formatJSON(input, highlight1, true);
-        if (isSplit) formatJSON(input2, highlight2, true);
-      }
-    }
-    // New: Ctrl+Shift+F for Search
-    if (e.ctrlKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F')) {
-        e.preventDefault();
-        searchInputBox.focus();
-        searchInputBox.select();
-    }
-  });
-
-  // Search Input Listeners
-  searchInputBox.addEventListener('input', () => {
-      handleSearchInput();
-  });
-
-  searchInputBox.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault(); // Keep focus in search box
-      if (e.shiftKey) {
-        navigateSearch('prev');
-      } else {
-        navigateSearch('next');
-      }
-    }
-  });
-
-  prevBtn.addEventListener('click', () => navigateSearch('prev'));
-  nextBtn.addEventListener('click', () => navigateSearch('next'));
-
-  // Toggle Wrap
-  toggleWrapBtn.addEventListener('click', () => {
-    isWrap = !isWrap;
-    updateWrapState();
-  });
-
-  // Toggle ReadOnly
-  toggleReadOnlyBtn.addEventListener('click', () => {
-    isReadOnly = !isReadOnly;
-    updateReadOnlyState();
-  });
-
-  // Toggle Split
-  splitBtn.addEventListener('click', () => {
-    isSplit = !isSplit;
-    updateSplitState();
-  });
-
-  // Toggle Theme
-  themeBtn.addEventListener('click', () => {
-    currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    updateThemeState();
-  });
-
-  // Save History
-  saveBtn.addEventListener('click', () => {
-    const text = input.value.trim();
-    if (text) {
-      saveToHistory(text);
-      status.textContent = '已保存到历史记录';
-      status.style.color = '#4caf50';
-      setTimeout(() => status.textContent = '就绪', 2000);
-    }
-  });
-
-  // Show History
-  historyBtn.addEventListener('click', () => {
-    renderHistory();
-    historyOverlay.style.display = 'flex';
-  });
-
-  // Close History
-  closeHistoryBtn.addEventListener('click', () => {
-    historyOverlay.style.display = 'none';
-  });
-
-  // Setup editor listeners
-  setupEditorListeners(input, 'json_fmt_draft', highlight1);
-  setupEditorListeners(input2, null, highlight2);
-
-  // Global shortcut (fallback)
-  document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F')) {
-      if (document.activeElement !== input && document.activeElement !== input2) {
-        e.preventDefault();
-        formatJSON(input, highlight1, true);
-        if (isSplit) formatJSON(input2, highlight2, true);
-      }
-    }
-  });
-
-  // --- Functions ---
-
-  function handleSearchInput() {
-    const term = searchInputBox.value;
-    
-    // Clear previous state
-    searchMatches = [];
-    currentMatchIndex = -1;
-    
-    if (!term) {
-        searchCount.textContent = '';
-        updateHighlight(input, highlight1);
-        if (isSplit) updateHighlight(input2, highlight2);
+  function setupGlobalShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      if (isShortcutFormat(e)) {
+        if (document.activeElement !== els.input1 && document.activeElement !== els.input2) {
+          e.preventDefault();
+          formatJsonInEditor(els.input1, els.highlight1, { force: true });
+          if (state.isSplit) formatJsonInEditor(els.input2, els.highlight2, { force: true });
+        }
         return;
-    }
-    
-    // Helper to find matches in a specific text and add to global list
-    const findMatches = (text, source) => {
-        const regex = new RegExp(escapeRegExp(term), 'gi');
-        let match;
-        while ((match = regex.exec(text)) !== null) {
-            searchMatches.push({
-                start: match.index,
-                end: match.index + term.length,
-                source: source
-            });
-        }
-    };
-
-    // Find matches in primary editor
-    findMatches(input.value, 'input');
-    const count1 = searchMatches.length;
-
-    // Find matches in secondary editor if split is active
-    if (isSplit) {
-        findMatches(input2.value, 'input2');
-    }
-    
-    // Update Count
-    updateSearchCountUI();
-    
-    // Highlight
-    updateHighlight(input, highlight1, 0);
-    if (isSplit) updateHighlight(input2, highlight2, count1);
-  }
-
-  function updateSearchCountUI() {
-      if (searchMatches.length === 0) {
-          searchCount.textContent = '0/0';
-      } else {
-          // Display 1-based index
-          const displayIndex = currentMatchIndex >= 0 ? currentMatchIndex + 1 : 0;
-          searchCount.textContent = `${displayIndex}/${searchMatches.length}`;
       }
-  }
 
-  function navigateSearch(direction) {
-      if (searchMatches.length === 0) return;
-      
-      if (direction === 'next') {
-          currentMatchIndex++;
-          if (currentMatchIndex >= searchMatches.length) currentMatchIndex = 0;
-      } else {
-          currentMatchIndex--;
-          if (currentMatchIndex < 0) currentMatchIndex = searchMatches.length - 1;
+      if (isShortcutFocusSearch(e)) {
+        e.preventDefault();
+        els.searchInputBox.focus();
+        els.searchInputBox.select();
       }
-      
-      updateSearchCountUI();
-      
-      const match = searchMatches[currentMatchIndex];
-      // Determine target editor based on match source
-      const target = match.source === 'input2' ? input2 : input;
-      const targetHighlight = match.source === 'input2' ? highlight2 : highlight1;
-      
-      // Select text in textarea
-      target.focus();
-      target.setSelectionRange(match.start, match.end);
-      
-      // Keep focus on search box
-      searchInputBox.focus();
-      
-      // Update Highlights to show "current" style
-      // We need to re-render both to ensure the previous "current" is cleared
-      // and the new "current" is applied.
-      // Re-calculating the split index for highlights
-      const matchesInInput1 = searchMatches.filter(m => m.source === 'input').length;
-      updateHighlight(input, highlight1, 0);
-      if (isSplit) updateHighlight(input2, highlight2, matchesInInput1);
-      
-      // Scroll Sync Logic
-      setTimeout(() => {
-         const currentSpan = targetHighlight.querySelector('.search-match.current');
-         if (currentSpan) {
-             // Scroll the specific span into view
-             currentSpan.scrollIntoView({ block: 'center', inline: 'nearest' });
-             
-             // Sync textarea scroll to match highlight layer
-             target.scrollTop = targetHighlight.scrollTop;
-             target.scrollLeft = targetHighlight.scrollLeft;
-         }
-      }, 0);
+    });
   }
 
-  function setupEditorListeners(editor, storageKey, highlight) {
+  function setupSearchControls() {
+    els.searchInputBox.addEventListener('input', () => {
+      rebuildSearchMatches();
+    });
+
+    els.searchInputBox.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      navigateSearch(e.shiftKey ? 'prev' : 'next');
+    });
+
+    els.prevBtn.addEventListener('click', () => navigateSearch('prev'));
+    els.nextBtn.addEventListener('click', () => navigateSearch('next'));
+  }
+
+  function setupMenuButtons() {
+    els.toggleWrapBtn.addEventListener('click', () => {
+      state.isWrap = !state.isWrap;
+      applyWrapState();
+    });
+
+    els.toggleReadOnlyBtn.addEventListener('click', () => {
+      state.isReadOnly = !state.isReadOnly;
+      applyReadOnlyState();
+    });
+
+    els.splitBtn.addEventListener('click', () => {
+      state.isSplit = !state.isSplit;
+      applySplitState();
+    });
+
+    els.themeBtn.addEventListener('click', () => {
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      applyThemeState();
+    });
+
+    els.saveBtn.addEventListener('click', () => {
+      const text = els.input1.value.trim();
+      if (!text) return;
+
+      saveToHistory(text);
+      setStatusOk('已保存到历史记录');
+      window.setTimeout(() => setStatusReady(), 2000);
+    });
+
+    els.historyBtn.addEventListener('click', () => {
+      renderHistory();
+      els.historyOverlay.style.display = 'flex';
+    });
+
+    els.closeHistoryBtn.addEventListener('click', () => {
+      els.historyOverlay.style.display = 'none';
+    });
+  }
+
+  function setupEditorListeners(editor, { storageKey, highlight }) {
     editor.addEventListener('input', (e) => {
-      if (storageKey) localStorage.setItem(storageKey, editor.value);
+      if (storageKey) writeString(storageKey, editor.value);
+
       if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromDrop') {
-        formatJSON(editor, highlight);
+        formatJsonInEditor(editor, highlight);
+        return;
+      }
+
+      validateJsonIntoStatus(editor.value);
+      if (getSearchTerm()) {
+        rebuildSearchMatches();
       } else {
-        validateJSON(editor);
-        if (searchInputBox.value) {
-            handleSearchInput();
-        } else {
-            updateHighlight(editor, highlight);
-        }
+        updateHighlightForEditor(editor, highlight, 0);
       }
     });
 
     editor.addEventListener('keydown', (e) => {
-      if (e.altKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F')) {
-        e.preventDefault();
-        formatJSON(editor, highlight, true);
-      }
+      if (!isShortcutFormat(e)) return;
+      e.preventDefault();
+      formatJsonInEditor(editor, highlight, { force: true });
     });
   }
 
   function setupEditorSync(editor, highlight) {
-    // Sync scrolling
     editor.addEventListener('scroll', () => {
       highlight.scrollTop = editor.scrollTop;
       highlight.scrollLeft = editor.scrollLeft;
     });
-    // Initial sync
-    updateHighlight(editor, highlight);
+    updateHighlightForEditor(editor, highlight, 0);
   }
 
-  function updateHighlight(editor, highlight, matchStartIndex = 0) {
-    let html = syntaxHighlight(editor.value);
-    
-    // Apply search highlight if search box has content
-    if (searchInputBox.value) {
-        html = applySearchHighlight(html, searchInputBox.value, matchStartIndex);
+  function rebuildSearchMatches() {
+    const term = getSearchTerm();
+
+    searchState.matches = [];
+    searchState.currentIndex = -1;
+    searchState.offsetInput2 = 0;
+
+    if (!term) {
+      els.searchCount.textContent = '';
+      updateHighlightForEditor(els.input1, els.highlight1, 0);
+      if (state.isSplit) updateHighlightForEditor(els.input2, els.highlight2, 0);
+      return;
     }
-    
+
+    findMatchesInText(els.input1.value, term, 'input');
+    searchState.offsetInput2 = searchState.matches.length;
+
+    if (state.isSplit) {
+      findMatchesInText(els.input2.value, term, 'input2');
+    }
+
+    updateSearchCountUI();
+    updateHighlightForEditor(els.input1, els.highlight1, 0);
+    if (state.isSplit) updateHighlightForEditor(els.input2, els.highlight2, searchState.offsetInput2);
+  }
+
+  function navigateSearch(direction) {
+    if (searchState.matches.length === 0) return;
+
+    if (direction === 'next') {
+      searchState.currentIndex = (searchState.currentIndex + 1) % searchState.matches.length;
+    } else {
+      searchState.currentIndex = (searchState.currentIndex - 1 + searchState.matches.length) % searchState.matches.length;
+    }
+
+    updateSearchCountUI();
+
+    const match = searchState.matches[searchState.currentIndex];
+    const target = match.source === 'input2' ? els.input2 : els.input1;
+    const targetHighlight = match.source === 'input2' ? els.highlight2 : els.highlight1;
+
+    target.focus();
+    target.setSelectionRange(match.start, match.end);
+    els.searchInputBox.focus();
+
+    updateHighlightForEditor(els.input1, els.highlight1, 0);
+    if (state.isSplit) updateHighlightForEditor(els.input2, els.highlight2, searchState.offsetInput2);
+
+    window.setTimeout(() => {
+      const currentSpan = targetHighlight.querySelector('.search-match.current');
+      if (!currentSpan) return;
+
+      currentSpan.scrollIntoView({ block: 'center', inline: 'nearest' });
+      target.scrollTop = targetHighlight.scrollTop;
+      target.scrollLeft = targetHighlight.scrollLeft;
+    }, 0);
+  }
+
+  function updateSearchCountUI() {
+    if (searchState.matches.length === 0) {
+      els.searchCount.textContent = '0/0';
+      return;
+    }
+    const displayIndex = searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0;
+    els.searchCount.textContent = `${displayIndex}/${searchState.matches.length}`;
+  }
+
+  function findMatchesInText(text, term, source) {
+    const regex = new RegExp(escapeRegExp(term), 'gi');
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      searchState.matches.push({
+        start: match.index,
+        end: match.index + term.length,
+        source
+      });
+    }
+  }
+
+  function updateHighlightForEditor(editor, highlight, matchStartIndex) {
+    let html = syntaxHighlight(editor.value);
+
+    const term = getSearchTerm();
+    if (term) {
+      html = applySearchHighlight(html, term, {
+        matchStartIndex,
+        currentMatchIndex: searchState.currentIndex
+      });
+    }
+
     highlight.innerHTML = html;
   }
 
-  function syntaxHighlight(json) {
-    if (!json) return '';
-    
-    // Basic escape
-    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    
-    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
-        let cls = 'number';
-        if (/^"/.test(match)) {
-            if (/:$/.test(match)) {
-                cls = 'key';
-            } else {
-                cls = 'string';
-            }
-        } else if (/true|false/.test(match)) {
-            cls = 'boolean';
-        } else if (/null/.test(match)) {
-            cls = 'null';
-        }
-        return '<span class="' + cls + '">' + match + '</span>';
-    });
-  }
-  
-  function applySearchHighlight(html, term, matchStartIndex = 0) {
-    // Create a temporary container to traverse text nodes
-    const div = document.createElement('div');
-    div.innerHTML = html;
-    
-    const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    let node;
-    while (node = walker.nextNode()) textNodes.push(node);
-    
-    const regex = new RegExp(escapeRegExp(term), 'gi');
-    let matchCounter = matchStartIndex;
-    
-    // Use the global searchMatches array to determine if a match corresponds to the current one?
-    // Actually, simpler to just count matches as we traverse.
-    // NOTE: This assumes DOM traversal order matches string regex order.
-    // Since syntax highlighting just wraps text in spans, the text content order is preserved.
-    
-    for (const textNode of textNodes) {
-        const text = textNode.nodeValue;
-        let newHtml = '';
-        let lastIndex = 0;
-        let match;
-        
-        // Reset regex for each node (we only match within nodes for simplicity)
-        regex.lastIndex = 0;
-        let hasMatch = false;
-        
-        while ((match = regex.exec(text)) !== null) {
-            hasMatch = true;
-            newHtml += escapeHtml(text.slice(lastIndex, match.index));
-            
-            const isCurrent = matchCounter === currentMatchIndex;
-            const className = isCurrent ? 'search-match current' : 'search-match';
-            
-            newHtml += `<span class="${className}">${escapeHtml(match[0])}</span>`;
-            
-            lastIndex = regex.lastIndex;
-            matchCounter++;
-        }
-        
-        if (hasMatch) {
-            newHtml += escapeHtml(text.slice(lastIndex));
-            const span = document.createElement('span');
-            span.innerHTML = newHtml;
-            textNode.parentNode.replaceChild(span, textNode);
-        }
-    }
-    
-    return div.innerHTML;
-  }
-
-  function escapeRegExp(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  function escapeHtml(text) {
-    return text.replace(/&/g, "&amp;")
-               .replace(/</g, "&lt;")
-               .replace(/>/g, "&gt;")
-               .replace(/"/g, "&quot;")
-               .replace(/'/g, "&#039;");
-  }
-
-  function updateWrapState() {
-    const editors = [input, input2];
-    const highlights = [highlight1, highlight2];
-    
-    const applyWrap = (el) => {
-      if (isWrap) {
+  function applyWrapState() {
+    const apply = (el) => {
+      if (state.isWrap) {
         el.classList.remove('no-wrap');
         el.classList.add('wrap');
       } else {
@@ -396,166 +280,262 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    editors.forEach(applyWrap);
-    highlights.forEach(applyWrap);
-    
-    toggleWrapBtn.textContent = isWrap ? '自动换行: 开启' : '自动换行: 关闭';
+    [els.input1, els.input2, els.highlight1, els.highlight2].forEach(apply);
+    els.toggleWrapBtn.textContent = state.isWrap ? '自动换行: 开启' : '自动换行: 关闭';
   }
 
-  function updateReadOnlyState() {
-    const editors = [input, input2];
-    editors.forEach(el => {
-      el.readOnly = isReadOnly;
+  function applyReadOnlyState() {
+    [els.input1, els.input2].forEach((el) => {
+      el.readOnly = state.isReadOnly;
     });
-    toggleReadOnlyBtn.textContent = isReadOnly ? '只读模式: 开启' : '只读模式: 关闭';
+    els.toggleReadOnlyBtn.textContent = state.isReadOnly ? '只读模式: 开启' : '只读模式: 关闭';
   }
 
-  function updateSplitState() {
-    if (isSplit) {
-      wrapper2.style.display = 'flex'; // Use flex for wrapper
-      splitBtn.textContent = '双栏对比: 开启';
-      // Sync layout
-      formatJSON(input2, highlight2, true);
+  function applySplitState() {
+    if (state.isSplit) {
+      els.wrapper2.style.display = 'flex';
+      els.splitBtn.textContent = '双栏对比: 开启';
+      formatJsonInEditor(els.input2, els.highlight2, { force: true });
     } else {
-      wrapper2.style.display = 'none';
-      splitBtn.textContent = '双栏对比: 关闭';
+      els.wrapper2.style.display = 'none';
+      els.splitBtn.textContent = '双栏对比: 关闭';
     }
-    
-    // Refresh search results if active
-    if (searchInputBox.value) {
-        handleSearchInput();
-    }
+
+    if (getSearchTerm()) rebuildSearchMatches();
   }
 
-  function updateThemeState() {
-    localStorage.setItem('json_fmt_theme', currentTheme);
-    if (currentTheme === 'light') {
+  function applyThemeState() {
+    writeString(STORAGE_KEYS.theme, state.theme);
+
+    if (state.theme === 'light') {
       document.body.classList.add('light-theme');
-      themeBtn.textContent = '切换主题: 亮色';
+      els.themeBtn.textContent = '切换主题: 亮色';
     } else {
       document.body.classList.remove('light-theme');
-      themeBtn.textContent = '切换主题: 暗色';
+      els.themeBtn.textContent = '切换主题: 暗色';
     }
-    // Refresh status color based on theme if it's "Ready"
-    if (status.textContent === '就绪' || status.textContent === 'Ready') {
-       status.style.color = currentTheme === 'light' ? '#666' : '#888';
+
+    if (els.status.textContent === '就绪' || els.status.textContent === 'Ready') {
+      els.status.style.color = getReadyStatusColor();
     }
   }
 
-  function validateJSON(target) {
-    const text = target.value;
+  function validateJsonIntoStatus(text) {
     if (!text.trim()) {
-      status.textContent = '就绪';
-      status.style.color = currentTheme === 'light' ? '#666' : '#888';
-      return;
+      setStatusReady();
+      return true;
     }
 
     try {
       JSON.parse(text);
-      status.textContent = 'JSON 有效';
-      status.style.color = '#4caf50';
-    } catch (e) {
-      status.textContent = 'JSON 格式错误';
-      status.style.color = '#f44336';
+      setStatusOk('JSON 有效');
+      return true;
+    } catch {
+      setStatusError('JSON 格式错误');
+      return false;
     }
   }
 
-  function formatJSON(target, highlight, force = false) {
-    const text = target.value;
-    if (!text.trim()) {
-      return;
-    }
+  function formatJsonInEditor(editor, highlight, { force = false } = {}) {
+    const text = editor.value;
+    if (!text.trim()) return;
 
     try {
       const parsed = JSON.parse(text);
       const formatted = JSON.stringify(parsed, null, 2);
-      
-      // Update if different or forced
-      if (target.value !== formatted || force) {
-         target.value = formatted;
-         if (target === input) localStorage.setItem('json_fmt_draft', formatted);
+
+      if (editor.value !== formatted || force) {
+        editor.value = formatted;
+        if (editor === els.input1) writeString(STORAGE_KEYS.draft, formatted);
       }
-      
-      if (searchInputBox.value) {
-          handleSearchInput();
+
+      if (getSearchTerm()) {
+        rebuildSearchMatches();
       } else {
-          updateHighlight(target, highlight);
+        updateHighlightForEditor(editor, highlight, 0);
       }
-      
-      status.textContent = 'JSON 已格式化';
-      status.style.color = '#4caf50';
-    } catch (e) {
-      status.textContent = 'JSON 格式错误';
-      status.style.color = '#f44336';
-    }
-  }
 
-  function saveToHistory(content) {
-    let history = getHistory();
-    // Add new item at the beginning
-    const newItem = {
-      id: Date.now(),
-      timestamp: new Date().toLocaleString('zh-CN'), // Use Chinese locale
-      content: content
-    };
-    
-    history.unshift(newItem);
-    
-    // Limit to MAX_HISTORY
-    if (history.length > MAX_HISTORY) {
-      history = history.slice(0, MAX_HISTORY);
+      setStatusOk('JSON 已格式化');
+    } catch {
+      setStatusError('JSON 格式错误');
     }
-    
-    localStorage.setItem('json_fmt_history', JSON.stringify(history));
-  }
-
-  function getHistory() {
-    const stored = localStorage.getItem('json_fmt_history');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        return [];
-      }
-    }
-    return [];
   }
 
   function renderHistory() {
     const history = getHistory();
-    historyList.innerHTML = '';
-    
+    els.historyList.innerHTML = '';
+
     if (history.length === 0) {
       const li = document.createElement('li');
       li.className = 'history-item';
       li.textContent = '暂无历史记录';
-      historyList.appendChild(li);
+      els.historyList.appendChild(li);
       return;
     }
 
-    history.forEach(item => {
+    history.forEach((item) => {
       const li = document.createElement('li');
       li.className = 'history-item';
-      
+
       const timeDiv = document.createElement('div');
       timeDiv.className = 'history-time';
       timeDiv.textContent = item.timestamp;
-      
+
       const previewDiv = document.createElement('div');
       previewDiv.className = 'history-preview';
       previewDiv.textContent = item.content.substring(0, 100).replace(/\n/g, ' ');
-      
+
       li.appendChild(timeDiv);
       li.appendChild(previewDiv);
-      
+
       li.addEventListener('click', () => {
-        input.value = item.content;
-        formatJSON(input, highlight1, true); // Re-format/validate upon load
-        historyOverlay.style.display = 'none';
-        status.textContent = '已从历史记录加载';
+        els.input1.value = item.content;
+        formatJsonInEditor(els.input1, els.highlight1, { force: true });
+        els.historyOverlay.style.display = 'none';
+        setStatusOk('已从历史记录加载');
       });
-      
-      historyList.appendChild(li);
+
+      els.historyList.appendChild(li);
     });
+  }
+
+  function saveToHistory(content) {
+    let history = getHistory();
+    const newItem = {
+      id: Date.now(),
+      timestamp: new Date().toLocaleString('zh-CN'),
+      content
+    };
+
+    history.unshift(newItem);
+    if (history.length > MAX_HISTORY) history = history.slice(0, MAX_HISTORY);
+    writeString(STORAGE_KEYS.history, JSON.stringify(history));
+  }
+
+  function getHistory() {
+    const stored = readString(STORAGE_KEYS.history);
+    if (!stored) return [];
+    try {
+      return JSON.parse(stored);
+    } catch {
+      return [];
+    }
+  }
+
+  function setStatusReady() {
+    setStatus('就绪', getReadyStatusColor());
+  }
+
+  function setStatusOk(text) {
+    setStatus(text, '#4caf50');
+  }
+
+  function setStatusError(text) {
+    setStatus(text, '#f44336');
+  }
+
+  function setStatus(text, color) {
+    els.status.textContent = text;
+    els.status.style.color = color;
+  }
+
+  function getReadyStatusColor() {
+    return state.theme === 'light' ? '#666' : '#888';
+  }
+
+  function getSearchTerm() {
+    return els.searchInputBox.value;
+  }
+
+  function readString(key) {
+    return localStorage.getItem(key);
+  }
+
+  function writeString(key, value) {
+    localStorage.setItem(key, value);
+  }
+
+  function isShortcutFormat(e) {
+    return e.altKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F');
+  }
+
+  function isShortcutFocusSearch(e) {
+    return e.ctrlKey && e.shiftKey && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F');
+  }
+
+  function syntaxHighlight(json) {
+    if (!json) return '';
+    const escaped = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return escaped.replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+      (match) => {
+        let cls = 'number';
+        if (/^"/.test(match)) {
+          cls = /:$/.test(match) ? 'key' : 'string';
+        } else if (/true|false/.test(match)) {
+          cls = 'boolean';
+        } else if (/null/.test(match)) {
+          cls = 'null';
+        }
+        return `<span class="${cls}">${match}</span>`;
+      }
+    );
+  }
+
+  function applySearchHighlight(html, term, { matchStartIndex, currentMatchIndex }) {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+
+    const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+
+    const regex = new RegExp(escapeRegExp(term), 'gi');
+    let matchCounter = matchStartIndex;
+
+    for (const textNode of textNodes) {
+      const text = textNode.nodeValue;
+      let newHtml = '';
+      let lastIndex = 0;
+      let match;
+
+      regex.lastIndex = 0;
+      let hasMatch = false;
+
+      while ((match = regex.exec(text)) !== null) {
+        hasMatch = true;
+        newHtml += escapeHtml(text.slice(lastIndex, match.index));
+
+        const isCurrent = matchCounter === currentMatchIndex;
+        const className = isCurrent ? 'search-match current' : 'search-match';
+        newHtml += `<span class="${className}">${escapeHtml(match[0])}</span>`;
+
+        lastIndex = regex.lastIndex;
+        matchCounter++;
+      }
+
+      if (hasMatch) {
+        newHtml += escapeHtml(text.slice(lastIndex));
+        const span = document.createElement('span');
+        span.innerHTML = newHtml;
+        textNode.parentNode.replaceChild(span, textNode);
+      }
+    }
+
+    return div.innerHTML;
+  }
+
+  function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function escapeHtml(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 });

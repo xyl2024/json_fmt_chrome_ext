@@ -10,6 +10,7 @@
   },
   "action": {
     "default_popup": "popup.html",
+    "default_title": "JSON 格式化",
     "default_icon": {
       "16": "json.png",
       "48": "json.png",
