@@ -4,17 +4,17 @@
   "version": "1.0",
   "description": "一个简单的JSON格式化工具，支持格式化和校验JSON字符串。",
   "icons": {
-    "16": "json.png",
-    "48": "json.png",
-    "128": "json.png"
+    "16": "public/json.png",
+    "48": "public/json.png",
+    "128": "public/json.png"
   },
   "action": {
     "default_popup": "popup.html",
     "default_title": "JSON 格式化",
     "default_icon": {
-      "16": "json.png",
-      "48": "json.png",
-      "128": "json.png"
+      "16": "public/json.png",
+      "48": "public/json.png",
+      "128": "public/json.png"
     }
   }
 }
